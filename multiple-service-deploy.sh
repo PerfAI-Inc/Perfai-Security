@@ -5,7 +5,7 @@ WAIT_FOR_COMPLETION=true
 FAIL_ON_NEW_LEAKS=false
 
 # Parse the input arguments
-TEMP=$(getopt -n "$0" -a -l "hostname:,username:,password:,openApiUrl:,basePath:,orgId:,appId:,label:,wait-for-completion:,fail-on-new-leaks:,authenticationUrl1:,authenticationBody1:,authorizationHeaders1:,authenticationUrl2:,authenticationBody2:,authorizationHeaders2:" -- -- "$@")
+TEMP=$(getopt -n "$0" -a -l "hostname:,username:,password:,openApiUrl:,basePath:,orgId:,appId:,label:,wait-for-completion:,fail-on-new-leaks:,authenticationUrl1:,authenticationBody1:,authorizationHeaders1:,authenticationUrl2:,authenticationBody2:,authorizationHeaders2:,appUrl:" -- -- "$@")
 
 [ $? -eq 0 ] || exit
 
@@ -30,6 +30,7 @@ do
         --authenticationUrl2) AUTH_URL_2="$2"; shift;;
         --authenticationBody2) AUTH_BODY_2="$2"; shift;;
         --authorizationHeaders2) AUTH_HEADERS_2="$2"; shift;;
+        --appUrl) APP_URL="$2"; shift;;
         --) shift ;;
     esac
     shift;
@@ -61,130 +62,212 @@ fi
 echo "Access Token is: $ACCESS_TOKEN"
 echo " "
 
-# Get commit information
-COMMIT_ID=${GITHUB_SHA}
-COMMIT_DATE=$(date "+%F")
-COMMIT_URL="https://github.com/${GITHUB_REPOSITORY}/commit/${COMMIT_ID}"
-#COMMENT="${{ github.event.head_commit.message }}"  # Fetch commit message
+### Step 2: Trigger Vision Agent Scan ###
+if [ -n "$APP_URL" ]; then
+    echo "Triggering Vision Agent Scan for URL: $APP_URL"
+    echo " "
 
-# Print commit information to confirm
-# echo "Commit ID: $COMMIT_ID"
-# echo "Commit Date: $COMMIT_DATE"
-# echo "Commit URL: $COMMIT_URL"
-#echo "Commit Message: $COMMENT"
+    VISION_TASK_RESPONSE=$(curl -s --location --request POST "https://api.perfai.ai/api/v1/vision-agent-tasks/create-task" \
+      -H "Authorization: Bearer $ACCESS_TOKEN" \
+      -H "x-org-id: $ORG_ID" \
+      -H "Content-Type: application/json" \
+      -d "{
+        \"type\": \"GENERATE_SPEC\",
+        \"org_id\": \"${ORG_ID}\",
+        \"app_id\": \"${APP_ID}\",
+        \"data\": {
+          \"url\": \"${APP_URL}\"
+        }
+      }")
 
-### Step 2: Schedule API Privacy Tests ###
-RUN_RESPONSE=$(curl -s --location --request POST "https://api.perfai.ai/api/v1/api-catalog/apps/schedule-run-multiple" \
-  -H "x-org-id: $ORG_ID" \
-  -H "Content-Type: application/json" \
+    echo "Vision Task Response: $VISION_TASK_RESPONSE"
+    echo " "
+
+    VISION_TASK_ID=$(echo "$VISION_TASK_RESPONSE" | jq -r '._id')
+
+    if [ -z "$VISION_TASK_ID" ] || [ "$VISION_TASK_ID" == "null" ]; then
+        echo "Error: Failed to create vision agent task. No task ID returned."
+        exit 1
+    fi
+
+    echo "Vision Agent Task ID: $VISION_TASK_ID"
+
+    if [ "$WAIT_FOR_COMPLETION" == "true" ]; then
+        echo "Waiting for vision agent scan to complete..."
+
+        VISION_STATUS="PENDING"
+        VISION_LAST_SNAPSHOT=""
+
+        while [[ "$VISION_STATUS" == "PENDING" || "$VISION_STATUS" == "IN_PROGRESS" ]]; do
+            sleep 15
+
+            VISION_STATUS_RESPONSE=$(curl -s --location --request GET \
+              "https://api.perfai.ai/api/v1/vision-agent-tasks/get-task/${VISION_TASK_ID}" \
+              -H "Authorization: Bearer $ACCESS_TOKEN" \
+              -H "x-org-id: $ORG_ID")
+
+            if [ -z "$VISION_STATUS_RESPONSE" ] || [ "$VISION_STATUS_RESPONSE" == "null" ]; then
+                echo "Error: Received empty response from vision agent task API."
+                exit 1
+            fi
+
+            VISION_STATUS=$(echo "$VISION_STATUS_RESPONSE" | jq -r '.status')
+            VISION_IS_ERROR=$(echo "$VISION_STATUS_RESPONSE" | jq -r '.isError')
+            VISION_MESSAGE=$(echo "$VISION_STATUS_RESPONSE" | jq -r '.message // "N/A"')
+            VISION_SNAPSHOT="${VISION_STATUS}|${VISION_IS_ERROR}|${VISION_MESSAGE}"
+
+            if [ "$VISION_SNAPSHOT" != "$VISION_LAST_SNAPSHOT" ]; then
+                echo "[$(date '+%H:%M:%S')] Vision Agent Status: $VISION_STATUS | Error: $VISION_IS_ERROR | Message: $VISION_MESSAGE"
+                VISION_LAST_SNAPSHOT="$VISION_SNAPSHOT"
+            fi
+        done
+
+        if [ "$VISION_STATUS" == "COMPLETED" ]; then
+            echo "Vision agent scan completed successfully."
+        elif [ "$VISION_STATUS" == "FAILED" ] || [ "$VISION_STATUS" == "ABORTED" ]; then
+            echo "Error: Vision agent scan ended with status: $VISION_STATUS. Message: $VISION_MESSAGE"
+            exit 1
+        else
+            echo "Vision agent scan ended with unexpected status: $VISION_STATUS"
+            exit 1
+        fi
+    else
+        echo "Vision agent scan triggered. Task ID: $VISION_TASK_ID. Continuing without waiting."
+    fi
+
+    echo " "
+fi
+
+### Step 3: Trigger sensitive_data_run via chain execution ###
+RUN_RESPONSE=$(curl -s --location --request POST "https://api.perfai.ai/chain-execution/execute" \
   -H "Authorization: Bearer $ACCESS_TOKEN" \
+  -H "Content-Type: application/json" \
   -d "{
-    \"appId\": \"${APP_ID}\",
-    \"services\": [\"PRIVACY\",\"GOVERNANCE\",\"VERSION\",\"SECURITY\",\"RELEASE\",\"CONTRACT\"],
-    \"label\": \"${LABEL}\",
-    \"openApiUrl\": \"${OPENAPI_URL}\",
-    \"basePath\": \"${BASE_PATH}\",
-    \"testAccount1\": {
-        \"authenticationUrl\": \"${AUTH_URL_1}\",
-        \"authenticationBody\": \"${AUTH_BODY_1}\",
-        \"authorizationHeaders\": \"${AUTH_HEADERS_1}\"
-    },
-    \"testAccount2\": {
-        \"authenticationUrl\": \"${AUTH_URL_2}\",
-        \"authenticationBody\": \"${AUTH_BODY_2}\",
-        \"authorizationHeaders\": \"${AUTH_HEADERS_2}\"
-    },
-    \"buildDetails\": {
-        \"commitId\": \"${COMMIT_ID}\",
-        \"commitUrl\": \"${COMMIT_URL}\",
-        \"commitUsername\": \"${GITHUB_ACTOR}\",
-        \"commitDate\": \"${COMMIT_DATE}\",
-        \"repoName\": \"${GITHUB_REPOSITORY}\",
-        \"comment\": \"${COMMENT}\"
+    \"catalog_id\": \"${APP_ID}\",
+    \"chain_config\": {
+      \"steps\": [
+        {
+          \"step_id\": \"sensitive_data_run\",
+          \"service\": \"sensitive_data\",
+          \"mode\": \"run\",
+          \"execution_order\": 1,
+          \"is_critical\": true,
+          \"enabled\": true,
+          \"metadata\": {
+            \"categories_to_run\": [
+              \"Authorization_Missing\",
+              \"Authorization_Invalid\",
+              \"Authorization_Expired\",
+              \"Authorization_Valid\",
+              \"RBAC\",
+              \"DB_Read\",
+              \"DB_Write\",
+              \"BOLA\",
+              \"Pagination_Invalid\",
+              \"Rate_Limit_Exist\",
+              \"Date_Filter_Invalid\",
+              \"SSRF\",
+              \"Privilege_Escalation\",
+              \"CORS_Exist\",
+              \"Audit_Data_Tampering\",
+              \"Broken_Token_Signature_Verification\",
+              \"Broken_Token_Tampered_Payload\",
+              \"Monitoring_Endpoint\",
+              \"BPLA\",
+              \"BTLA\",
+              \"BRLA\",
+              \"Cross_Environment_Token_Acceptance\",
+              \"Cross_Application_Token_Acceptance\",
+              \"Broken_Token_Revocation\",
+              \"Broken_Logout\",
+              \"Search_Data_Leak\",
+              \"Data_Access_Authorization_Anomaly\",
+              \"BOLA_Cross_Roles\",
+              \"BOLA_Cross_Tenant\",
+              \"BOLA_Same_Tenant_Ownership\"
+            ]
+          }
+        }
+      ]
     }
   }"
 )
 
-#echo "Run Response: $RUN_RESPONSE"
-
-### RUN_ID Prints ###
-RUN_ID=$(echo "$RUN_RESPONSE" | jq -r '.runId')
-
-
-# Output Run Response ###
 echo " "
 echo "Run Response: $RUN_RESPONSE"
 echo " "
-echo "Run ID is: $RUN_ID"
 
-# Check if RUN_ID is null or empty
-if [ -z "$RUN_ID" ] || [ "$RUN_ID" == "null" ]; then
-    echo "API Privacy Tests triggered. Run ID: $RUN_ID. Exiting without waiting for completion."
+CHAIN_EXECUTION_ID=$(echo "$RUN_RESPONSE" | jq -r '.chain_execution_id')
+TERMINAL_SESSION_ID=$(echo "$RUN_RESPONSE" | jq -r '.terminal_session_id // "N/A"')
+
+if [ -z "$CHAIN_EXECUTION_ID" ] || [ "$CHAIN_EXECUTION_ID" == "null" ]; then
+    echo "Error: Failed to trigger chain execution. No chain_execution_id returned."
     exit 1
 fi
 
-### Step 3: Check the wait-for-completion flag ###
+echo "Chain Execution ID  : $CHAIN_EXECUTION_ID"
+echo "Terminal Session ID : $TERMINAL_SESSION_ID"
+
+### Step 4: Check the wait-for-completion flag ###
 if [ "$WAIT_FOR_COMPLETION" == "true" ]; then
-    echo "Waiting for API Privacy Tests to complete..."
+    echo "Waiting for sensitive_data_run to complete..."
 
-    STATUS="PROCESSING"
-    LAST_STATUS=""
+    STATUS="PENDING"
+    LAST_SNAPSHOT=""
+    NULL_RETRIES=0
+    MAX_NULL_RETRIES=3
 
-    while [[ "$STATUS" == "PROCESSING" ]]; do
+    while [[ "$STATUS" == "PENDING" || "$STATUS" == "RUNNING" ]]; do
         sleep 15
 
         STATUS_RESPONSE=$(curl -s --location --request GET \
-          "https://api.perfai.ai/api/v1/api-catalog/apps/all_service_run_status?run_id=$RUN_ID" \
-          --header "x-org-id: $ORG_ID" \
+          "https://api.perfai.ai/chain-execution/chain/$CHAIN_EXECUTION_ID" \
           --header "Authorization: Bearer $ACCESS_TOKEN")
 
-        # Handle empty or null response
         if [ -z "$STATUS_RESPONSE" ] || [ "$STATUS_RESPONSE" == "null" ]; then
             echo "Error: Received empty response from the API."
             exit 1
         fi
 
-        # Prefer top-level .status
-        STATUS=$(echo "$STATUS_RESPONSE" | jq -r '.status')
+        STATUS=$(echo "$STATUS_RESPONSE" | jq -r '.status // empty')
 
-        # Print only when status changes
-        if [ "$STATUS" != "$LAST_STATUS" ]; then
-            echo "AI Running Status: $STATUS"
+        if [ -z "$STATUS" ] || [ "$STATUS" == "null" ]; then
+            NULL_RETRIES=$((NULL_RETRIES + 1))
+            echo "[$(date '+%H:%M:%S')] Warning: status field missing in response (attempt $NULL_RETRIES/$MAX_NULL_RETRIES). Raw response: $STATUS_RESPONSE"
+            if [ "$NULL_RETRIES" -ge "$MAX_NULL_RETRIES" ]; then
+                echo "Error: status field missing after $MAX_NULL_RETRIES retries. Last response: $STATUS_RESPONSE"
+                exit 1
+            fi
+            continue
         fi
-        LAST_STATUS="$STATUS"
+
+        NULL_RETRIES=0
+        CURRENT_STEP=$(echo "$STATUS_RESPONSE" | jq -r '.current_step_id // "N/A"')
+        PROGRESS=$(echo "$STATUS_RESPONSE" | jq -r '.progress_percentage // 0')
+        COMPLETED_STEPS=$(echo "$STATUS_RESPONSE" | jq -r '(.completed_steps // []) | join(", ")')
+        FAILED_STEPS_LIST=$(echo "$STATUS_RESPONSE" | jq -r '(.failed_steps // []) | join(", ")')
+        POLL_TERMINAL_ID=$(echo "$STATUS_RESPONSE" | jq -r '.terminal_session_id // "N/A"')
+
+        SNAPSHOT="${STATUS}|${PROGRESS}|${CURRENT_STEP}|${COMPLETED_STEPS}|${FAILED_STEPS_LIST}|${POLL_TERMINAL_ID}"
+
+        if [ "$SNAPSHOT" != "$LAST_SNAPSHOT" ]; then
+            echo "[$(date '+%H:%M:%S')] Status: $STATUS | Progress: ${PROGRESS}% | Current Step: $CURRENT_STEP | Completed: ${COMPLETED_STEPS:-none} | Failed: ${FAILED_STEPS_LIST:-none} | Terminal Session: $POLL_TERMINAL_ID"
+            LAST_SNAPSHOT="$SNAPSHOT"
+        fi
     done
 
-    # Extract fields
-    PRIVACY=$(echo "$STATUS_RESPONSE" | jq -r '.privacy')
-    SECURITY=$(echo "$STATUS_RESPONSE" | jq -r '.security')
-    GOVERNANCE=$(echo "$STATUS_RESPONSE" | jq -r '.governance')
-    VERSION=$(echo "$STATUS_RESPONSE" | jq -r '.version')
-    RELEASE=$(echo "$STATUS_RESPONSE" | jq -r '.release')
-    CONTRACT=$(echo "$STATUS_RESPONSE" | jq -r '.contract')
-
-    if [ "$STATUS" == "COMPLETED" ]; then
-        NEW_ISSUES=$(echo "$STATUS_RESPONSE" | jq -r '.privacy.newIssues // [] | .[]?')
-        NEW_ISSUES_DETECTED=$(echo "$STATUS_RESPONSE" | jq -r '.privacy.newIssuesDetected')
-
-        if [ -z "$NEW_ISSUES" ] || [ "$NEW_ISSUES" == "null" ]; then
-            echo "No new issues detected. ✅ Build passed."
-        else
-            echo "Build failed with new issues."
-            echo "Complete Privacy Status: $PRIVACY"
-            echo "Complete Security Status: $SECURITY"
-            echo "Complete Governance Status: $GOVERNANCE"
-            echo "Complete Version Status: $VERSION"
-            echo "Complete Release Status: $RELEASE"
-            echo "Complete Contract Status: $CONTRACT"
-            exit 1
-        fi
+    if [[ "$STATUS" == "COMPLETED" || "$STATUS" == "DONE" || "$STATUS" == "SUCCESS" ]]; then
+        echo "sensitive_data_run completed successfully for catalog ID $APP_ID."
     elif [ "$STATUS" == "FAILED" ]; then
-        echo "Error: API Privacy failed for Run ID $RUN_ID"
+        FAILED_STEPS=$(echo "$STATUS_RESPONSE" | jq -r '.failed_steps | join(", ")')
+        echo "Error: Chain execution failed. Failed steps: $FAILED_STEPS"
+        exit 1
+    else
+        echo "Chain execution ended with unexpected status: $STATUS"
+        echo "Raw response: $STATUS_RESPONSE"
         exit 1
     fi
-
-    echo "API Privacy Tests for API ID $APP_ID finished with status: $STATUS"
 else
-    echo "API Privacy Tests triggered. Run ID: $RUN_ID. Exiting without waiting for completion."
+    echo "sensitive_data_run triggered. Chain Execution ID: $CHAIN_EXECUTION_ID. Exiting without waiting for completion."
     exit 0
 fi

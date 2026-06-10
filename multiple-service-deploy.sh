@@ -54,8 +54,8 @@ TOKEN_RESPONSE=$(curl -s --location --request POST "https://api.perfai.ai/api/v1
 
 ACCESS_TOKEN=$(echo $TOKEN_RESPONSE | jq -r '.id_token')
 
-if [ -z "$ACCESS_TOKEN" ]; then
-    echo "Error: Could not retrieve access token"
+if [ -z "$ACCESS_TOKEN" ] || [ "$ACCESS_TOKEN" == "null" ]; then
+    echo "Error: Could not retrieve access token. Auth response: $TOKEN_RESPONSE"
     exit 1
 fi
 
@@ -97,21 +97,37 @@ if [ -n "$APP_URL" ]; then
 
         VISION_STATUS="PENDING"
         VISION_LAST_SNAPSHOT=""
+        VISION_EMPTY_RETRIES=0
+        VISION_MAX_EMPTY_RETRIES=5
 
         while [[ "$VISION_STATUS" == "PENDING" || "$VISION_STATUS" == "IN_PROGRESS" ]]; do
-            sleep 15
+            sleep 30
 
             VISION_STATUS_RESPONSE=$(curl -s --location --request GET \
               "https://api.perfai.ai/api/v1/vision-agent-tasks/get-task/${VISION_TASK_ID}" \
               -H "Authorization: Bearer $ACCESS_TOKEN" \
               -H "x-org-id: $ORG_ID")
 
-            if [ -z "$VISION_STATUS_RESPONSE" ] || [ "$VISION_STATUS_RESPONSE" == "null" ]; then
-                echo "Error: Received empty response from vision agent task API."
-                exit 1
+            if [ -z "$VISION_STATUS_RESPONSE" ] || [ "$VISION_STATUS_RESPONSE" == "null" ] || ! echo "$VISION_STATUS_RESPONSE" | jq -e . >/dev/null 2>&1; then
+                VISION_EMPTY_RETRIES=$((VISION_EMPTY_RETRIES + 1))
+                FIRST_LINE=$(echo "$VISION_STATUS_RESPONSE" | head -1)
+                echo "[$(date '+%H:%M:%S')] Warning: non-JSON or empty response from vision agent API (attempt $VISION_EMPTY_RETRIES/$VISION_MAX_EMPTY_RETRIES): $FIRST_LINE"
+                if [ "$VISION_EMPTY_RETRIES" -ge "$VISION_MAX_EMPTY_RETRIES" ]; then
+                    echo "Error: vision agent API returned bad response $VISION_MAX_EMPTY_RETRIES times in a row. Aborting."
+                    exit 1
+                fi
+                sleep 30
+                continue
             fi
 
-            VISION_STATUS=$(echo "$VISION_STATUS_RESPONSE" | jq -r '.status')
+            VISION_EMPTY_RETRIES=0
+            VISION_STATUS=$(echo "$VISION_STATUS_RESPONSE" | jq -r '.status // empty')
+
+            if [ -z "$VISION_STATUS" ] || [ "$VISION_STATUS" == "null" ]; then
+                echo "[$(date '+%H:%M:%S')] Warning: status field missing in vision response. Raw: $VISION_STATUS_RESPONSE"
+                continue
+            fi
+
             VISION_IS_ERROR=$(echo "$VISION_STATUS_RESPONSE" | jq -r '.isError')
             VISION_MESSAGE=$(echo "$VISION_STATUS_RESPONSE" | jq -r '.message // "N/A"')
             VISION_SNAPSHOT="${VISION_STATUS}|${VISION_IS_ERROR}|${VISION_MESSAGE}"
@@ -124,8 +140,24 @@ if [ -n "$APP_URL" ]; then
 
         if [ "$VISION_STATUS" == "COMPLETED" ]; then
             echo "Vision agent scan completed successfully."
+            echo " "
+            echo "===== Vision Agent Results ====="
+            VISION_RESULTS=$(echo "$VISION_STATUS_RESPONSE" | jq -r '.results // empty')
+            VISION_IS_ERROR_FINAL=$(echo "$VISION_STATUS_RESPONSE" | jq -r '.isError')
+            VISION_MSG_FINAL=$(echo "$VISION_STATUS_RESPONSE" | jq -r '.message // "none"')
+            echo "Is Error : $VISION_IS_ERROR_FINAL"
+            echo "Message  : $VISION_MSG_FINAL"
+            if [ -n "$VISION_RESULTS" ]; then
+                echo "Results  :"
+                echo "$VISION_RESULTS" | jq . 2>/dev/null || echo "$VISION_RESULTS"
+            else
+                echo "Results  : (no results field returned — spec may have been saved directly to the app)"
+            fi
+            echo "================================"
+            echo " "
         elif [ "$VISION_STATUS" == "FAILED" ] || [ "$VISION_STATUS" == "ABORTED" ]; then
             echo "Error: Vision agent scan ended with status: $VISION_STATUS. Message: $VISION_MESSAGE"
+            echo "Full response: $VISION_STATUS_RESPONSE"
             exit 1
         else
             echo "Vision agent scan ended with unexpected status: $VISION_STATUS"
@@ -207,33 +239,42 @@ fi
 
 echo "Chain Execution ID  : $CHAIN_EXECUTION_ID"
 echo "Terminal Session ID : $TERMINAL_SESSION_ID"
+echo " "
 
 ### Step 4: Check the wait-for-completion flag ###
 if [ "$WAIT_FOR_COMPLETION" == "true" ]; then
-    echo "Waiting for sensitive_data_run to complete..."
+    echo "Waiting for sensitive_data_run to complete (this typically takes 45–90 min for full scan)..."
 
     STATUS="PENDING"
     LAST_SNAPSHOT=""
     NULL_RETRIES=0
     MAX_NULL_RETRIES=3
+    CHAIN_START_TIME=$(date +%s)
 
     while [[ "$STATUS" == "PENDING" || "$STATUS" == "RUNNING" ]]; do
-        sleep 15
+        sleep 30
 
         STATUS_RESPONSE=$(curl -s --location --request GET \
           "https://api.perfai.ai/chain-execution/chain/$CHAIN_EXECUTION_ID" \
           --header "Authorization: Bearer $ACCESS_TOKEN")
 
-        if [ -z "$STATUS_RESPONSE" ] || [ "$STATUS_RESPONSE" == "null" ]; then
-            echo "Error: Received empty response from the API."
-            exit 1
+        if [ -z "$STATUS_RESPONSE" ] || [ "$STATUS_RESPONSE" == "null" ] || ! echo "$STATUS_RESPONSE" | jq -e . >/dev/null 2>&1; then
+            NULL_RETRIES=$((NULL_RETRIES + 1))
+            FIRST_LINE=$(echo "$STATUS_RESPONSE" | head -1)
+            echo "[$(date '+%H:%M:%S')] Warning: non-JSON or empty response from chain execution API (attempt $NULL_RETRIES/$MAX_NULL_RETRIES): $FIRST_LINE"
+            if [ "$NULL_RETRIES" -ge "$MAX_NULL_RETRIES" ]; then
+                echo "Error: chain execution API returned bad response $MAX_NULL_RETRIES times in a row. Aborting."
+                exit 1
+            fi
+            sleep 30
+            continue
         fi
 
         STATUS=$(echo "$STATUS_RESPONSE" | jq -r '.status // empty')
 
         if [ -z "$STATUS" ] || [ "$STATUS" == "null" ]; then
             NULL_RETRIES=$((NULL_RETRIES + 1))
-            echo "[$(date '+%H:%M:%S')] Warning: status field missing in response (attempt $NULL_RETRIES/$MAX_NULL_RETRIES). Raw response: $STATUS_RESPONSE"
+            echo "[$(date '+%H:%M:%S')] Warning: status field missing in response (attempt $NULL_RETRIES/$MAX_NULL_RETRIES). Raw: $STATUS_RESPONSE"
             if [ "$NULL_RETRIES" -ge "$MAX_NULL_RETRIES" ]; then
                 echo "Error: status field missing after $MAX_NULL_RETRIES retries. Last response: $STATUS_RESPONSE"
                 exit 1
@@ -246,21 +287,53 @@ if [ "$WAIT_FOR_COMPLETION" == "true" ]; then
         PROGRESS=$(echo "$STATUS_RESPONSE" | jq -r '.progress_percentage // 0')
         COMPLETED_STEPS=$(echo "$STATUS_RESPONSE" | jq -r '(.completed_steps // []) | join(", ")')
         FAILED_STEPS_LIST=$(echo "$STATUS_RESPONSE" | jq -r '(.failed_steps // []) | join(", ")')
-        POLL_TERMINAL_ID=$(echo "$STATUS_RESPONSE" | jq -r '.terminal_session_id // "N/A"')
+        ELAPSED=$(( ($(date +%s) - CHAIN_START_TIME) / 60 ))
 
-        SNAPSHOT="${STATUS}|${PROGRESS}|${CURRENT_STEP}|${COMPLETED_STEPS}|${FAILED_STEPS_LIST}|${POLL_TERMINAL_ID}"
+        SNAPSHOT="${STATUS}|${PROGRESS}|${CURRENT_STEP}|${COMPLETED_STEPS}|${FAILED_STEPS_LIST}"
 
         if [ "$SNAPSHOT" != "$LAST_SNAPSHOT" ]; then
-            echo "[$(date '+%H:%M:%S')] Status: $STATUS | Progress: ${PROGRESS}% | Current Step: $CURRENT_STEP | Completed: ${COMPLETED_STEPS:-none} | Failed: ${FAILED_STEPS_LIST:-none} | Terminal Session: $POLL_TERMINAL_ID"
+            echo "[$(date '+%H:%M:%S')] Elapsed: ${ELAPSED}m | Status: $STATUS | Progress: ${PROGRESS}% | Current Step: $CURRENT_STEP | Completed: ${COMPLETED_STEPS:-none} | Failed: ${FAILED_STEPS_LIST:-none}"
             LAST_SNAPSHOT="$SNAPSHOT"
         fi
     done
 
     if [[ "$STATUS" == "COMPLETED" || "$STATUS" == "DONE" || "$STATUS" == "SUCCESS" ]]; then
-        echo "sensitive_data_run completed successfully for catalog ID $APP_ID."
+        ELAPSED_TOTAL=$(( ($(date +%s) - CHAIN_START_TIME) / 60 ))
+        echo "sensitive_data_run completed successfully for catalog ID $APP_ID (elapsed: ${ELAPSED_TOTAL}m)."
+        echo " "
+        echo "===== Security Scan Results ====="
+        echo "Chain Execution ID : $CHAIN_EXECUTION_ID"
+        echo "Completed Steps    : $(echo "$STATUS_RESPONSE" | jq -r '(.completed_steps // []) | join(", ")')"
+        echo "Failed Steps       : $(echo "$STATUS_RESPONSE" | jq -r '(.failed_steps // []) | join(", ")')"
+        SCAN_RESULTS=$(echo "$STATUS_RESPONSE" | jq -r '.results // empty')
+        if [ -n "$SCAN_RESULTS" ]; then
+            echo "Results:"
+            echo "$SCAN_RESULTS" | jq . 2>/dev/null || echo "$SCAN_RESULTS"
+        fi
+        echo "================================="
+        echo " "
+
+        ### Fetch Security Issues ###
+        echo "===== Security Issues ====="
+        ISSUES_RESPONSE=$(curl -s --location --request GET \
+          "https://api.perfai.ai/api/v1/sensitive-data-service/apps/all-issues-ids-security?app_id=${APP_ID}&sortBy=severity&sortOrder=DESC" \
+          -H "Authorization: Bearer $ACCESS_TOKEN" \
+          -H "x-org-id: $ORG_ID" \
+          -H "accept: application/json")
+
+        if [ -z "$ISSUES_RESPONSE" ] || ! echo "$ISSUES_RESPONSE" | jq -e . >/dev/null 2>&1; then
+            echo "Warning: could not fetch security issues. Response: $(echo "$ISSUES_RESPONSE" | head -1)"
+        else
+            ISSUE_COUNT=$(echo "$ISSUES_RESPONSE" | jq 'if type == "array" then length elif .data then (.data | length) else 0 end' 2>/dev/null || echo "unknown")
+            echo "Total Issues : $ISSUE_COUNT"
+            echo " "
+            echo "$ISSUES_RESPONSE" | jq . 2>/dev/null || echo "$ISSUES_RESPONSE"
+        fi
+        echo "==========================="
     elif [ "$STATUS" == "FAILED" ]; then
         FAILED_STEPS=$(echo "$STATUS_RESPONSE" | jq -r '.failed_steps | join(", ")')
         echo "Error: Chain execution failed. Failed steps: $FAILED_STEPS"
+        echo "Raw response: $STATUS_RESPONSE"
         exit 1
     else
         echo "Chain execution ended with unexpected status: $STATUS"

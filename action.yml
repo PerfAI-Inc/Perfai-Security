@@ -1,6 +1,6 @@
-name: PerfAI Actions
+name: Perfai Actions
 description: Active Performance for APIs (public, mobile, & web)
-author: PerfAI, Inc.
+author: Perfai, Inc.
 
 branding:
   icon: trending-up
@@ -8,10 +8,10 @@ branding:
 
 inputs:
   username:
-    description: 'PerfAI Username'
+    description: 'Perfai Username'
     required: true
   password:
-    description: 'PerfAI Password'
+    description: 'Perfai Password'
     required: true
   orgId:
     description: 'Organization ID'
@@ -23,7 +23,7 @@ inputs:
     description: 'App ID used for fetching security issues'
     required: true
   wait-for-completion:
-    description: 'Wait until PerfAI scan completes. Set to `true` to block until done.'
+    description: 'Wait until Perfai scan completes. Set to `true` to block until done.'
     required: false
     default: "true"
   fail-on-new-leaks:
@@ -38,7 +38,7 @@ runs:
       run: chmod +x ${GITHUB_ACTION_PATH}/multiple-service-deploy.sh
       shell: bash
 
-    - name: Run PerfAI Security Scan
+    - name: Run Perfai Security Scan
       run: |
         ${GITHUB_ACTION_PATH}/multiple-service-deploy.sh \
           --username "${{ inputs.username }}" \

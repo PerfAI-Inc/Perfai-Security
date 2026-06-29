@@ -1,12 +1,12 @@
 
-# PerfAI
+# Perfai
 
 AI-Powered API Performance Testing. Deliver high-performance APIs/Apps that your customers will love and achieve a 3x upsell.
 
-PerfAI is an active performance platform that supports a wide range of APIs, including public, private, mobile, and web APIs. By leveraging PerfAI, you can deliver high-performance APIs, resulting in reduced churn, 3x higher user engagement, and increased upsell opportunities.
+Perfai is an active performance platform that supports a wide range of APIs, including public, private, mobile, and web APIs. By leveraging Perfai, you can deliver high-performance APIs, resulting in reduced churn, 3x higher user engagement, and increased upsell opportunities.
 
 ## Learn more
-- [Visit www.PerfAI.ai](https://www.perfai.ai/)
+- [Visit www.Perfai.ai](https://www.perfai.ai/)
 
 
 ## Important Links
@@ -51,7 +51,7 @@ steps:
 3.	**authUrl**: Recommended but optional
 4.	**authBody**: Recommended but optional (Either Auth Body or Auth Headers)
 5.	**authHeaders**: Recommended but optional (Either Auth Headers or Auth Body)
-6.	**licenseKey**: 'your-license-key' (Provided by PerfAI)
+6.	**licenseKey**: 'your-license-key' (Provided by Perfai)
 
 **Example (using petstore.io) and Definitions:**
 
@@ -104,6 +104,6 @@ licenseKey: 'your-license-key'
 ![image](https://github.com/PerfAI-Inc/PerfAI-Action/assets/990419/d2f26e0b-aa37-41af-9d2b-8744f10dcecb)
 
 
-[PerfAI Terms of Use](https://www.perfai.ai/terms-of-use) | [Privacy Policy](https://www.perfai.ai/privacy-policy)
+[Perfai Terms of Use](https://www.perfai.ai/terms-of-use) | [Privacy Policy](https://www.perfai.ai/privacy-policy)
 
 

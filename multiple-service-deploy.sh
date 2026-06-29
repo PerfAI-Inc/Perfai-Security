@@ -5,7 +5,7 @@ WAIT_FOR_COMPLETION=true
 FAIL_ON_NEW_LEAKS=false
 
 # Parse the input arguments
-TEMP=$(getopt -n "$0" -a -l "hostname:,username:,password:,openApiUrl:,basePath:,orgId:,appId:,catalogId:,label:,wait-for-completion:,fail-on-new-leaks:,authenticationUrl1:,authenticationBody1:,authorizationHeaders1:,authenticationUrl2:,authenticationBody2:,authorizationHeaders2:,appUrl:" -- -- "$@")
+TEMP=$(getopt -n "$0" -a -l "hostname:,username:,password:,openApiUrl:,basePath:,orgId:,catalogId:,label:,wait-for-completion:,fail-on-new-leaks:,authenticationUrl1:,authenticationBody1:,authorizationHeaders1:,authenticationUrl2:,authenticationBody2:,authorizationHeaders2:,appUrl:" -- -- "$@")
 
 [ $? -eq 0 ] || exit
 
@@ -20,7 +20,6 @@ do
         --openApiUrl) OPENAPI_URL="$2"; shift;;
         --basePath) BASE_PATH="$2"; shift;;  
         --orgId) ORG_ID="$2"; shift;;
-        --appId) APP_ID="$2"; shift;;
         --catalogId) CATALOG_ID="$2"; shift;;
         --label) LABEL="$2"; shift;;
         --wait-for-completion) WAIT_FOR_COMPLETION="$2"; shift;;
@@ -55,7 +54,7 @@ TOKEN_RESPONSE=$(curl -sS --location --request POST "https://api.perfai.ai/api/v
 CURL_EXIT=$?
 
 if [ $CURL_EXIT -ne 0 ]; then
-    echo "Error: Failed to connect to PerfAI auth API (curl exit $CURL_EXIT): $TOKEN_RESPONSE"
+    echo "Error: Failed to connect to Perfai auth API (curl exit $CURL_EXIT): $TOKEN_RESPONSE"
     echo "Check network connectivity and ensure api.perfai.ai is reachable from this host."
     exit 1
 fi
@@ -165,7 +164,6 @@ echo "==================================="
 echo " "
 
 CHAIN_EXECUTION_ID=$(echo "$RUN_RESPONSE" | jq -r '.chain_execution_id')
-TERMINAL_SESSION_ID=$(echo "$RUN_RESPONSE" | jq -r '.terminal_session_id // "N/A"')
 
 if [ -z "$CHAIN_EXECUTION_ID" ] || [ "$CHAIN_EXECUTION_ID" == "null" ]; then
     echo "Error: Failed to trigger chain execution. No chain_execution_id returned."
@@ -173,7 +171,6 @@ if [ -z "$CHAIN_EXECUTION_ID" ] || [ "$CHAIN_EXECUTION_ID" == "null" ]; then
 fi
 
 echo "Chain Execution ID  : $CHAIN_EXECUTION_ID"
-echo "Terminal Session ID : $TERMINAL_SESSION_ID"
 echo " "
 
 ### Step 4: Check the wait-for-completion flag ###
@@ -248,6 +245,20 @@ if [ "$WAIT_FOR_COMPLETION" == "true" ]; then
         echo "================================="
         echo " "
 
+        ### Fetch Catalog Summary and extract sensitive_app_id ###
+        CATALOG_SUMMARY=$(curl -s --location \
+          "https://api.perfai.ai/api/v1/api-catalog/apps/summary/${CATALOG_ID}" \
+          -H "Authorization: Bearer $ACCESS_TOKEN" \
+          -H "x-org-id: $ORG_ID" \
+          -H "accept: application/json")
+        SENSITIVE_APP_ID=$(echo "$CATALOG_SUMMARY" | jq -r '.sensitive_app_id // empty')
+
+        if [ -z "$SENSITIVE_APP_ID" ] || [ "$SENSITIVE_APP_ID" == "null" ]; then
+            echo "Error: Could not extract sensitive_app_id from catalog summary."
+            exit 1
+        fi
+        echo "Sensitive App ID    : $SENSITIVE_APP_ID"
+
         ### Fetch Security Issues — poll for up to 5 minutes until issues appear ###
         echo "===== Security Issues ====="
         ISSUES_POLL_INTERVAL=15
@@ -256,7 +267,7 @@ if [ "$WAIT_FOR_COMPLETION" == "true" ]; then
 
         while [ "$(date +%s)" -lt "$ISSUES_POLL_DEADLINE" ]; do
             ISSUES_RESPONSE=$(curl -s --location \
-              "https://api.perfai.ai/api/v1/sensitive-data-service/apps/app_issues_security?app_id=${APP_ID}&page=1&pageSize=100&sortBy=severity&sortOrder=DESC" \
+              "https://api.perfai.ai/api/v1/sensitive-data-service/apps/app_issues_security?app_id=${SENSITIVE_APP_ID}&page=1&pageSize=100&sortBy=severity&sortOrder=DESC" \
               -H "Authorization: Bearer $ACCESS_TOKEN" \
               -H "x-org-id: $ORG_ID" \
               -H "accept: application/json")
@@ -309,27 +320,9 @@ if [ "$WAIT_FOR_COMPLETION" == "true" ]; then
           completed_steps,
           current_step_id,
           step_run_ids,
-          completed_at,
-          terminal_session_id
+          completed_at
         }' 2>/dev/null || echo "$STATUS_RESPONSE"
         echo "==========================="
-
-        FAIL_TERMINAL_ID=$(echo "$STATUS_RESPONSE" | jq -r '.terminal_session_id // empty')
-        if [ -n "$FAIL_TERMINAL_ID" ] && [ "$FAIL_TERMINAL_ID" != "null" ]; then
-            echo " "
-            echo "===== Terminal Logs (session: $FAIL_TERMINAL_ID) ====="
-            TERMINAL_LOGS=$(curl -s --location \
-              "https://api.perfai.ai/api/v1/terminal-sessions/${FAIL_TERMINAL_ID}/logs" \
-              -H "Authorization: Bearer $ACCESS_TOKEN" \
-              -H "x-org-id: $ORG_ID" \
-              -H "accept: application/json")
-            if echo "$TERMINAL_LOGS" | jq -e . >/dev/null 2>&1; then
-                echo "$TERMINAL_LOGS" | jq .
-            else
-                echo "$TERMINAL_LOGS"
-            fi
-            echo "======================================================"
-        fi
 
         exit 1
     else

@@ -43,7 +43,7 @@ then
 PERFAI_HOSTNAME="https://cloud.perfai.ai"
 fi
 
-### Step 1: Print Access Token ###
+### Step 1: Authenticate and obtain access token ###
 TOKEN_RESPONSE=$(curl -sS --location --request POST "https://api.perfai.ai/api/v1/auth/token" \
 --header "x-org-id: $ORG_ID" \
 --header "Content-Type: application/json" \
@@ -66,7 +66,12 @@ if [ -z "$ACCESS_TOKEN" ] || [ "$ACCESS_TOKEN" == "null" ]; then
     exit 1
 fi
 
-echo "Access Token is: $ACCESS_TOKEN"
+# Do not print the token. Under GitHub Actions, register it so the runner scrubs it
+# from all subsequent log output; the guard keeps direct/local runs from echoing it.
+if [ -n "$GITHUB_ACTIONS" ]; then
+    echo "::add-mask::$ACCESS_TOKEN"
+fi
+echo "Authentication successful."
 echo " "
 
 ### Step 2: Trigger Vision Agent Scan (disabled) ###

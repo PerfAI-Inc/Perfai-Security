@@ -65,7 +65,6 @@ Requires `curl` and `jq` on PATH.
 
 - **`appId` is not wired.** `action.yml` passes `--appId`, but it is absent from the script's `getopt` long-option list, so on util-linux `getopt` (GitHub `ubuntu-latest`) the call returns `unknown option -- appId` (exit 1) and the script aborts before auth. The issues app id is derived from the catalog summary (`sensitive_app_id`) instead — `appId` is not needed.
 - **`fail-on-new-leaks` is a no-op** — parsed into `FAIL_ON_NEW_LEAKS` but never referenced; the build is not gated on findings.
-- **Bearer token is echoed to the CI log** — the script prints `Access Token is: $ACCESS_TOKEN`. Remove it; never echo the token / `--password` / `Authorization` headers.
 - **Vestigial args** — `hostname`, `openApiUrl`, `basePath`, `label`, `appUrl`, and the `authentication*` / `authorizationHeaders*` options are parsed but unused (template leftovers).
 - **`README.md` is legacy** — it documents an unrelated `docker://…/perfai-engine` action with `apiSpecURL`/`licenseKey` inputs and does not match `action.yml`.
 
@@ -75,7 +74,7 @@ Requires `curl` and `jq` on PATH.
 
 - **Check every external call.** Capture the curl exit status and the response, and on failure print a clear message and `exit 1` (the script already does this for auth, chain-execution, status polling, and issue fetch — keep the pattern).
 - **Log progress at each phase** (auth, chain started, status transitions, issues ready) so CI logs are followable; the status poller already de-dupes repeated snapshots.
-- **Never echo secrets into CI logs.** ⚠️ The script currently prints the bearer token — remove it, and never echo `--password`, the `id_token`/`ACCESS_TOKEN`, or `Authorization` headers. Mark secret inputs as masked in the calling workflow.
+- **Never echo secrets into CI logs.** Never print `--password`, the `id_token`/`ACCESS_TOKEN`, or `Authorization` headers. After auth the script registers the token via `::add-mask::` under GitHub Actions (guarded by `$GITHUB_ACTIONS` so direct/local runs don't echo it) and prints only `Authentication successful.` — keep it that way. Mark secret inputs as masked in the calling workflow.
 - **Exit codes are the contract.** Return non-zero on any failure so the pipeline fails; return `0` only on a successful (or intentionally non-waiting) run.
 
 ## 10. Keeping This File Current (Docs-as-Code)

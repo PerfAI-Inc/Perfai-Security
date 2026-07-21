@@ -12,6 +12,8 @@ on:
 
 permissions:
   pull-requests: write
+  checks: read
+  statuses: read
 
 concurrency:
   group: auto-approve-${{ github.event.pull_request.number || 'sweep' }}
@@ -26,17 +28,17 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
           EVENT_PR: ${{ github.event.pull_request.number }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
 
           REVIEWER="github-actions[bot]"
-          BODY="Approved automatically by the auto-approve workflow. This is not a human review."
 
           approve_one () {
             num="$1"
-            meta=$(gh api "repos/$REPO/pulls/$num" \
-                     --jq '[.draft, .user.login, .user.type, .head.sha] | @tsv')
-            IFS=$'\t' read -r draft author atype headsha <<<"$meta"
+            meta=$(gh api "repos/$REPO/pulls/$num" --jq \
+              '[.draft, .user.login, .user.type, .head.sha, .base.ref, .head.ref] | @tsv')
+            IFS=$'\t' read -r draft author atype headsha baseref headref <<<"$meta"
 
             # Fail closed: a partial/failed fetch must never fall through to approve.
             if [ -z "$draft" ] || [ -z "$author" ] || [ -z "$headsha" ]; then
@@ -59,9 +61,63 @@ jobs:
               echo "PR #$num  SKIP  already approved at ${headsha:0:7}"; return
             fi
 
-            gh api -X POST "repos/$REPO/pulls/$num/reviews" \
-              -f event=APPROVE -f body="$BODY" >/dev/null
-            echo "PR #$num  APPROVED  ($author)"
+            # CI state at approval time. Recorded, never gated on — this workflow
+            # approves regardless, so the review should say what it approved over.
+            ci=$(gh api "repos/$REPO/commits/$headsha/check-runs" --jq '
+                   .check_runs as $r
+                   | "\([$r[]|select(.conclusion=="success")]|length)"
+                     + "|\([$r[]|select(.conclusion=="failure" or .conclusion=="timed_out"
+                                       or .conclusion=="cancelled")]|length)"
+                     + "|\([$r[]|select(.status!="completed")]|length)"
+                     + "|\($r|length)"' 2>/dev/null) || ci="0|0|0|0"
+            IFS='|' read -r ci_pass ci_fail ci_pend ci_total <<<"${ci:-0|0|0|0}"
+
+            if [ "${ci_total:-0}" = "0" ]; then
+              ci_line="no checks reported on this commit"
+            elif [ "${ci_fail:-0}" != "0" ]; then
+              ci_line="**${ci_fail} failing** / ${ci_pass} passing / ${ci_pend} pending — approved over failing checks"
+            elif [ "${ci_pend:-0}" != "0" ]; then
+              ci_line="${ci_pass} passing / ${ci_pend} still running — approved before checks finished"
+            else
+              ci_line="${ci_pass} passing / 0 failing"
+            fi
+
+            now=$(date -u '+%Y-%m-%d %H:%M:%S UTC')
+
+            # One argument per line so every line stays indented inside the YAML
+            # block scalar; printf supplies the newlines.
+            body=$(printf '%s\n' \
+              "### Automated approval — not a human review" \
+              "" \
+              "This pull request was approved by a workflow. **No person has read this diff.**" \
+              "" \
+              "| | |" \
+              "|---|---|" \
+              "| Approved by | \`${REVIEWER}\` via \`.github/workflows/auto-approve.yml\` |" \
+              "| Repository | \`${REPO}\` |" \
+              "| Pull request | #${num} by @${author} |" \
+              "| Branch | \`${headref}\` → \`${baseref}\` |" \
+              "| Commit approved | \`${headsha}\` |" \
+              "| Trigger | \`${GITHUB_EVENT_NAME}\` |" \
+              "| Workflow run | [run #${GITHUB_RUN_NUMBER}](${RUN_URL}) |" \
+              "| Approved at | ${now} |" \
+              "| CI at approval | ${ci_line} |" \
+              "" \
+              "**Policy applied**" \
+              "" \
+              "- Approves every non-draft, human-authored PR, from any author" \
+              "- Skips drafts, bot authors, and commits this bot already approved" \
+              "- **No CI gate** — this approval does not mean checks passed" \
+              "- **No path restrictions** — CI workflow files, infrastructure, and production config are approved the same as application code" \
+              "" \
+              "This approval satisfies the branch ruleset's required-approval count, so the PR becomes mergeable without human review. **Merging is still manual.**" \
+              "" \
+              "Approval is re-issued per commit — pushing a new commit produces a new approval." \
+              "To stop this, disable the workflow or delete \`.github/workflows/auto-approve.yml\`.")
+
+            jq -n --arg b "$body" '{event:"APPROVE", body:$b}' \
+              | gh api -X POST "repos/$REPO/pulls/$num/reviews" --input - >/dev/null
+            echo "PR #$num  APPROVED  ($author, ci: ${ci_line})"
           }
 
           if [ -n "${EVENT_PR:-}" ]; then

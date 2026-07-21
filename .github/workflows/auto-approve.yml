@@ -1,0 +1,77 @@
+name: Auto-approve PRs
+
+# Approves human-authored PRs from anyone other than the repo owner.
+#
+# pull_request_target (not pull_request) so the token can write on fork PRs too.
+# This is only safe because the job never checks out PR head code — it makes API
+# calls and nothing else. Do not add actions/checkout to this workflow.
+on:
+  pull_request_target:
+    types: [opened, reopened, ready_for_review, synchronize]
+  workflow_dispatch: {}   # manual sweep over the existing open-PR backlog
+
+permissions:
+  pull-requests: write
+
+concurrency:
+  group: auto-approve-${{ github.event.pull_request.number || 'sweep' }}
+  cancel-in-progress: false
+
+jobs:
+  approve:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Approve eligible PRs
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          EVENT_PR: ${{ github.event.pull_request.number }}
+          SKIP_AUTHOR: abdullahakbar
+        run: |
+          set -euo pipefail
+
+          REVIEWER="github-actions[bot]"
+          BODY="Approved automatically by the auto-approve workflow. This is not a human review."
+
+          approve_one () {
+            num="$1"
+            meta=$(gh api "repos/$REPO/pulls/$num" \
+                     --jq '[.draft, .user.login, .user.type, .head.sha] | @tsv')
+            IFS=$'\t' read -r draft author atype headsha <<<"$meta"
+
+            # Fail closed: a partial/failed fetch must never fall through to approve.
+            if [ -z "$draft" ] || [ -z "$author" ] || [ -z "$headsha" ]; then
+              echo "PR #$num  SKIP  could not read PR metadata"; return
+            fi
+
+            if [ "$draft" = "true" ]; then
+              echo "PR #$num  SKIP  draft"; return
+            fi
+            if [ "$author" = "$SKIP_AUTHOR" ]; then
+              echo "PR #$num  SKIP  own PR ($author)"; return
+            fi
+            if [ "$atype" = "Bot" ]; then
+              echo "PR #$num  SKIP  bot author ($author)"; return
+            fi
+
+            # Don't stack a second approval on a commit we already approved.
+            already=$(gh api "repos/$REPO/pulls/$num/reviews" --paginate --jq \
+              "[.[] | select(.user.login == \"$REVIEWER\"
+                             and .state == \"APPROVED\"
+                             and .commit_id == \"$headsha\")] | length")
+            if [ "$already" != "0" ]; then
+              echo "PR #$num  SKIP  already approved at ${headsha:0:7}"; return
+            fi
+
+            gh api -X POST "repos/$REPO/pulls/$num/reviews" \
+              -f event=APPROVE -f body="$BODY" >/dev/null
+            echo "PR #$num  APPROVED  ($author)"
+          }
+
+          if [ -n "${EVENT_PR:-}" ]; then
+            approve_one "$EVENT_PR"
+          else
+            echo "Sweeping open PRs in $REPO"
+            gh api "repos/$REPO/pulls?state=open&per_page=100" --paginate --jq '.[].number' \
+              | while read -r n; do approve_one "$n"; done
+          fi

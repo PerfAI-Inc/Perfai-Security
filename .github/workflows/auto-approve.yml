@@ -1,6 +1,6 @@
 name: Auto-approve PRs
 
-# Approves human-authored PRs from anyone other than the repo owner.
+# Approves every human-authored PR, regardless of author.
 #
 # pull_request_target (not pull_request) so the token can write on fork PRs too.
 # This is only safe because the job never checks out PR head code — it makes API
@@ -26,7 +26,6 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
           EVENT_PR: ${{ github.event.pull_request.number }}
-          SKIP_AUTHOR: abdullahakbar
         run: |
           set -euo pipefail
 
@@ -46,9 +45,6 @@ jobs:
 
             if [ "$draft" = "true" ]; then
               echo "PR #$num  SKIP  draft"; return
-            fi
-            if [ "$author" = "$SKIP_AUTHOR" ]; then
-              echo "PR #$num  SKIP  own PR ($author)"; return
             fi
             if [ "$atype" = "Bot" ]; then
               echo "PR #$num  SKIP  bot author ($author)"; return

@@ -1,0 +1,9 @@
+title = "PerfAI Gitleaks config"
+
+# Extend the default Gitleaks ruleset rather than replacing it.
+[extend]
+useDefault = true
+
+# Accepted false positives (DevOps#199) go below as [[allowlists]] entries, each
+# scoped to the narrowest path or line and with a stated reason. A real secret
+# is never allowlisted: it is removed and rotated.

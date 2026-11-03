@@ -1,0 +1,17 @@
+name: Security Scan
+# DevOps#112/#199: Gitleaks comes from the shared org workflow, so the scanner,
+# its pin and flags live in one place:
+#   https://github.com/PerfAI-Inc/.github/blob/main/.github/workflows/security-suite.yml
+# Per-repo exceptions stay in .gitleaks.toml. Fix or allowlist with a reason;
+# never leave a job red.
+#
+# Check name on a PR: "scan / Gitleaks (secret scan)". It is a required status
+# check in main's `main-baseline` ruleset once it is green.
+on:
+  pull_request:
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    uses: PerfAI-Inc/.github/.github/workflows/security-suite.yml@main
